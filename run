@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# I'm sorry... I don't want to do this every time... I just git clone into my home dir...
+export DEV_ENV=~/dev
+
 script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 if [ -z "$DEV_ENV" ]; then
@@ -6,10 +10,88 @@ if [ -z "$DEV_ENV" ]; then
     exit 1
 fi
 
-# if i just did DEV_ENV=$(pwd) ./run then this is needed for the rest of the
-# scripts
-export DEV_ENV="$DEV_ENV"
+# Let's make this multi-distro compatible (let's try to be inclusive here)
+pkg_mgr_dir=""
 
+# Debian derrivatives
+if command -v apt > /dev/null 2>&1; then
+	pkg_mgr_dir="deb"
+
+# Arch derrivatives
+elif command -v pacman > /dev/null 2>&1; then
+	pkg_mgr_dir="pacman"
+
+# Red Hat derrivatives
+elif command -v dnf > /dev/null 2>&1; then
+	pkg_mgr_dir=="dnf"
+
+# Older Red Hat derrivatives
+elif command -v yum > /dev/null 2>&1; then
+	pkg_mgr_dir="yum"
+
+# OpenSUSE derrivatives
+elif command -v zypper > /dev/null 2>&1; then
+	pkg_mgr_dir="zypper"
+
+# Alpine derrivatives
+elif command -v apk > /dev/null 2>&1; then
+	pkg_mgr_dir="apk"
+
+# Gentoo derrivatives
+elif command -v emerge > /dev/null 2>&1; then
+	pkg_mgr_dir="emerge"
+
+# Slackware derrivatives
+elif command -v slackpkg > /dev/null 2>&1; then
+	pkg_mgr_dir="slackpkg"
+
+# Void derrivatives
+elif command -v xbps > /dev/null 2>&1; then
+	pkg_mgr_dir="xbps"
+
+# NixOS derrivatives
+elif command -v nix > /dev/null 2>&1; then
+	pkg_mgr_dir="nix"
+
+# BSD/Unix/Solaris derrivatives
+elif command -v pkg > /dev/null 2>&1; then
+	pkg_mgr_dir="pkg"
+
+# Other BSD derrivatives
+elif command -v ports > /dev/null 2>&1; then
+	pkg_mgr_dir="ports"
+
+# Another BSD derrivatives
+elif command -v pkgsrc > /dev/null 2>&1; then
+	pkg_mgr_dir="pkgsrc"
+
+# MacOS/Linux derrivatives
+elif command -v brew > /dev/null 2>&1; then
+	pkg_mgr_dir="brew"
+
+# Freedom derrivatives
+elif command -v guix > /dev/null 2>&1; then
+	pkg_mgr_dir="guix"
+
+else
+	log "ERROR: Could not determine a supported package manager."
+	log "Pease create a subdirectory in $script_dir/runs/ for your package manager and update this file."
+	exit 1
+fi
+
+	log "Detected package manager type: $pkg_mgr_dir. Scripts will be sourced from runs/$pkg_mgr_dir/"
+
+target_runs_subdir="runs/$pkg_mgr_dir"
+runs_dir="$script_dir/$target_runs_subdir"
+
+if [ ! -d "$runs_dir" ]; then
+	log "ERROR: Directory $runs_dir does not exist."
+	log "Please create it and add your package manager scripts there."
+	exit 1;
+fi
+
+
+# --- Parse Arguments ---
 grep=""
 dry_run="0"
 
@@ -23,74 +105,96 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+executable_scripts=$(find "$runs_dir" -mindepth 1 -maxdepth 1 -type f -executable)
+
+
+# If there is no grep pattern
+if [ -z "$grep" ]; then
+	log "No specific script pattern provided, running all scripts in alphabetical order"
+	for script in $executable_scripts; do
+		full_path="$runs_dir/$script"
+		if [ -f "$full_path" ] && [ -x "$full_path" ]; then
+			log "Running script: $full_path"
+			if [ "$dry_run" = "0" ]; then
+				"$full_path"
+			fi
+		else
+			log "Script $full_path not found or not executable in '$target_runs_subdir'. Skipping."
+		fi
+	done
+else
+	log "Specific script pattern '$grep_pattern' provided. Searching in '$target_runs_subdir':"
+	found_match=0
+
+	for script in $executable_scripts; do
+		if basename $script | grep -vq "$grep"; then
+			log "grep \"$grep\" filtered out $script"
+			continue
+		fi
+
+		log "running script: $script"
+
+		if [ "$dry_run" = "0" ]; then
+			"$script"
+		fi
+	done
+fi
+
+
 log() {
-    if [[ $dry_run == "1" ]]; then
+    if [ "$dry_run" == "1" ]; then
         echo "[DRY_RUN]: $1"
     else
         echo "$1"
     fi
 }
 
-log "RUN: env: $env -- grep: $grep"
 
-runs_dir=`find $script_dir/runs -mindepth 1 -maxdepth 1 -executable`
+remove_files() {
+    pushd $1
+    (
+        configs=`find . -mindepth 1 -maxdepth 1 -type d`
+        if [ "$dry_run" == "1" ]; then
+            echo "[DRY_RUN]: removing: $configs"
+        else
+            echo "removing: $configs"
+        fi
 
-for s in $runs_dir; do
-    if basename $s | grep -vq "$grep"; then
-        log "grep \"$grep\" filtered out $s"
-        continue
+        for c in $configs; do
+            directory=${2%/}/${c}
+            if [ "$dry_run" == "1" ]; then
+                echo "[DRY_RUN]:    removing: $directory"
+            else
+                echo "    removing: $directory"
+                rm -rf $directory
+            fi
+        done
+
+        if [ "$dry_run" == "1" ]; then
+            echo "copying env: $2"
+        else
+            echo "copying env: $2"
+            cp -r ./* $2
+        fi
+    )
+    popd
+}
+
+run_env() {
+    pushd $script_dir
+    echo "removing ~config"
+    remove_files env/.config $XDG_CONFIG_HOME
+
+    echo "removing ~local"
+    remove_files env/.local $HOME/.local
+
+    echo "copying zsh"
+    if [ "$dry_run" == "0" ]; then
+        cp $script_dir/env/.zshrc ~/.zshrc
+        cp $script_dir/env/.zsh_profile ~/.zsh_profile
     fi
 
-    log "running script: $s"
+    popd
+}
 
-    if [[ $dry_run == "0" ]]; then
-        $s
-    fi
-done
-
-#remove_files() {
-#    pushd $1
-#    (
-#        configs=`find . -mindepth 1 -maxdepth 1 -type d`
-#        if [[ $dry_run == "1" ]]; then
-#            echo "[DRY_RUN]: removing: $configs"
-#        else
-#            echo "removing: $configs"
-#        fi
-#
-#        for c in $configs; do
-#            directory=${2%/}/${c}
-#            if [[ $dry_run == "1" ]]; then
-#                echo "[DRY_RUN]:    removing: $directory"
-#            else
-#                echo "    removing: $directory"
-#                rm -rf $directory
-#            fi
-#        done
-#
-#        if [[ $dry_run == "1" ]]; then
-#            echo "copying env: $2"
-#        else
-#            echo "copying env: $2"
-#            cp -r ./* $2
-#        fi
-#    )
-#    popd
-#}
-
-#run_env() {
-#    pushd $script_dir
-#    echo "removing ~config"
-#    remove_files env/.config $XDG_CONFIG_HOME
-#
-#    echo "removing ~local"
-#    remove_files env/.local $HOME/.local
-#
-#    echo "copying zsh"
-#    if [[ $dry_run == "0" ]]; then
-#        cp $script_dir/env/.zshrc ~/.zshrc
-#        cp $script_dir/env/.zsh_profile ~/.zsh_profile
-#    fi
-#
-#    popd
-#}
+run_env
